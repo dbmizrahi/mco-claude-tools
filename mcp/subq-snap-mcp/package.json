@@ -1,6 +1,6 @@
 {
   "name": "subq-snap-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for the SubQ Snap decision model, packaged as a Claude desktop extension (.mcpb).",
   "private": true,
   "type": "module",

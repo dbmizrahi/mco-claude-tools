@@ -3,7 +3,7 @@
   "manifest_version": "0.3",
   "name": "subq-snap-mcp",
   "display_name": "SubQ Snap",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SubQ Snap decision model: answers fixed-choice questions about content with a probability per answer.",
   "long_description": "Adds one tool, decide, that sends a piece of content (state) and up to 128 named questions (yes/no, choice or score) to the SubQ Decisions API and returns a probability per answer instead of generated text. Used by the tech-llm-council plugin for routing, file relevance, strongest-response and agreement checks. The content you pass to the tool is sent to SubQ (api.subq.ai); you need your own SubQ API key.",
   "author": {
@@ -16,13 +16,21 @@
   },
   "homepage": "https://github.com/dbmizrahi/mco-claude-tools/tree/main/mcp/subq-snap-mcp",
   "license": "MIT",
-  "keywords": ["subq", "snap", "decision model", "classification", "routing"],
+  "keywords": [
+    "subq",
+    "snap",
+    "decision model",
+    "classification",
+    "routing"
+  ],
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/dist/index.js"],
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
       "env": {
         "SUBQ_API_KEY": "${user_config.api_key}",
         "SUBQ_API_URL": "${user_config.api_url}",
@@ -70,7 +78,11 @@
     }
   },
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=18.0.0"
     }
