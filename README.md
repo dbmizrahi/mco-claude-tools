@@ -127,25 +127,42 @@ released. A skill that should be installable or versioned belongs in a plugin.
 ## Releases
 
 Versions come from [conventional commits](https://www.conventionalcommits.org/)
-that touch the plugin's directory — nothing is bumped by hand:
+that touch a plugin's or connector's directory — nothing is bumped by hand, and
+nobody merges release PRs by hand either:
 
-| Commit prefix | Effect on that plugin |
+| Commit prefix | Effect on that package |
 |---|---|
 | `fix: …` | patch |
 | `feat: …` | minor |
 | `feat!: …` or a `BREAKING CHANGE:` footer | major |
 | `docs:`, `chore:`, `refactor:`, `test:`, `ci:` | no release |
 
-On each push to `main`, release-please opens or updates one Release PR per
-plugin that has releasable commits. Merging that PR bumps the plugin's
-`plugin.json` and `CHANGELOG.md`, creates the tag `<name>-v<version>` and the
-GitHub release, and the same workflow run builds and attaches the assets:
-`<name>-<version>.zip`, `<name>.plugin` (identical bytes, the Cowork name) and
-`SHA256SUMS`. The archive is the plugin directory alone, with `plugin.json` at
-its root, and is validated again after extraction before it is published.
+On each push to `main`, `release-please.yml` runs the whole release with no
+manual step:
 
-A commit that does not follow the convention produces no version bump, so if a
-Release PR does not appear after merging, check the commit message first.
+1. release-please opens or updates **one combined Release PR** with every
+   package that has releasable commits: it bumps each plugin's `plugin.json` (or
+   each connector's `package.json`, `package-lock.json` and `manifest.json`) and
+   writes its `CHANGELOG.md`.
+2. The Release PR's exact head commit is validated with `validate.yml` — the
+   same checks as any other PR.
+3. If the checks pass, the workflow squash-merges exactly that commit. It merges
+   only PRs opened by `github-actions` with the `autorelease: pending` label and
+   bot-only commits, and only while the PR contains the current `main`.
+4. It then creates each package's tag `<name>-v<version>` and GitHub release,
+   and builds and attaches the assets.
+
+Your own PRs are never merged automatically. If someone pushes to a Release
+PR's branch, that PR is left for review too. If validation fails, nothing is
+released; the next push to `main` rebuilds the Release PR and tries again.
+
+A plugin release attaches `<name>-<version>.zip`, `<name>.plugin` (identical
+bytes, the Cowork name) and `SHA256SUMS`. The archive is the plugin directory
+alone, with `plugin.json` at its root, and is validated again after extraction
+before it is published.
+
+A commit that does not follow the convention produces no version bump, so if no
+release follows a merge, check the commit message first.
 Commits outside `plugins/<name>/` and `mcp/<name>/` never release anything.
 
 A connector release attaches `<name>-<version>.mcpb` and `SHA256SUMS`. The
@@ -170,6 +187,11 @@ The tag must equal `<name>-v<version in plugin.json>`, or the build refuses.
   sufficient.
 - `main` is the default branch: `/plugin marketplace add owner/repo` follows
   the default branch, so merging to `main` is what publishes.
+- Branch rules on `main` that require reviews or status checks would block the
+  automatic merge of Release PRs unless GitHub Actions may bypass them.
+  Release PRs get no status checks of their own (PRs opened with
+  `GITHUB_TOKEN` don't trigger workflows); they are validated inside
+  `release-please.yml` instead.
 
 ## Validation
 

@@ -3,7 +3,7 @@
   "release-type": "simple",
   "include-v-in-tag": true,
   "include-component-in-tag": true,
-  "separate-pull-requests": true,
+  "separate-pull-requests": false,
   "packages": {
     "plugins/tech-llm-council": {
       "package-name": "tech-llm-council",

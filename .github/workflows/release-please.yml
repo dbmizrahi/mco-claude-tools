@@ -5,21 +5,37 @@ name: Release Please
 #   fix:              -> patch     feat:             -> minor
 #   feat!: / BREAKING CHANGE:      -> major
 #
-# One release-please package per plugin and per connector (see
-# release-please-config.json). On each push to main the bot opens or updates one
-# Release PR per package whose directory changed; the PR bumps that plugin's
-# .claude-plugin/plugin.json (or that connector's package.json, package-lock.json
-# and manifest.json) and writes its CHANGELOG.md. Merging it creates the tag
-# <name>-v<version> and the GitHub release.
+# One release-please package per plugin and per connector, all in ONE combined
+# Release PR (release-please-config.json: separate-pull-requests false). On each
+# push to main the bot opens or updates that PR; it bumps each changed plugin's
+# .claude-plugin/plugin.json (or connector's package.json, package-lock.json and
+# manifest.json) and writes its CHANGELOG.md. Each package still gets its own
+# tag <name>-v<version>, GitHub release and assets.
 #
-# The asset build runs HERE, in the same workflow run, rather than in a separate
-# tag-triggered workflow. GitHub does not start a new workflow run for events
-# raised with the default GITHUB_TOKEN, so a tag created by this bot would never
-# fire `on: push: tags`. Building here avoids needing a PAT.
+# Release PRs need no human: this workflow validates and merges them itself.
+#   release_please       create/update the Release PR, or release a Release PR
+#                        that a person merged
+#   find_release_pr      find the open Release PR that may be merged
+#   validate_release_pr  run validate.yml (the same checks as any PR) on the
+#                        exact head commit of the Release PR
+#   merge_release_pr     squash-merge exactly that commit, only if it is a bot PR
+#                        with bot-only commits and main has not moved meanwhile
+#   release_after_merge  create the tags and GitHub releases for that merge
+#   assets               build and attach the release assets
+#
+# Why it is all in one workflow: GitHub does not start new workflow runs for
+# events raised with the default GITHUB_TOKEN. So validate.yml never runs on a
+# PR the bot opened, the bot's merge does not re-trigger this workflow, and a
+# tag created by the bot never fires `on: push: tags`. Doing every step here
+# avoids needing a PAT. Your own PRs are not touched: only PRs opened by
+# github-actions, labelled "autorelease: pending" and containing nothing but
+# bot commits are merged automatically.
 #
 # Repo/org setting this depends on: Settings -> Actions -> General -> Workflow
 # permissions -> "Allow GitHub Actions to create and approve pull requests".
 # `permissions: pull-requests: write` below is necessary but not sufficient.
+# Branch rules on main that require reviews or status checks would block the
+# bot's merge unless GitHub Actions may bypass them.
 
 on:
   push:
@@ -33,6 +49,10 @@ permissions:
 concurrency:
   group: release-please-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  RELEASE_LABEL: "autorelease: pending"
+  BOT_LOGIN: "github-actions[bot]"
 
 jobs:
   release_please:
@@ -57,16 +77,150 @@ jobs:
           OUTPUTS: ${{ toJSON(steps.release.outputs) }}
         run: printf '%s\n' "$OUTPUTS"
 
-  assets:
+  # A separate job, so a problem finding the PR never blocks the assets of a
+  # release that release_please has already created.
+  find_release_pr:
     needs: release_please
-    if: needs.release_please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.pr.outputs.number }}
+      pr_sha: ${{ steps.pr.outputs.sha }}
+      pr_branch: ${{ steps.pr.outputs.branch }}
+    steps:
+      # Looked up independently of the action's prs_created output, so a Release
+      # PR left open by an earlier failed run is picked up again.
+      - name: Find the open Release PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          candidates=$(gh pr list --repo "$REPO" --state open --base "$BASE" \
+            --label "$RELEASE_LABEL" --json number,headRefName,headRefOid,author \
+            --jq '[.[] | select(.author.is_bot == true and (.author.login | test("github-actions")))]')
+          eligible=()
+          while read -r number branch sha; do
+            [ -n "$number" ] || continue
+            # A person pushing to the bot's branch (a conflict resolution, say)
+            # turns it into a PR that needs review: never merge it automatically.
+            # Bot commits are authored by github-actions[bot] and committed by
+            # GitHub itself (API login web-flow); a merge from the web UI has a
+            # person as author, so it is caught by the author check.
+            others=$(gh api --paginate "repos/$REPO/pulls/$number/commits" \
+              --jq ".[] | select((.author.login // \"\") != \"$BOT_LOGIN\" or ((.committer.login // \"\") as \$c | \$c != \"$BOT_LOGIN\" and \$c != \"web-flow\")) | .sha")
+            if [ -n "$others" ]; then
+              echo "::warning title=Release PR #$number needs review::it contains commits not made by $BOT_LOGIN, so it is not merged automatically"
+              continue
+            fi
+            eligible+=("$number $branch $sha")
+          done < <(jq -r '.[] | "\(.number) \(.headRefName) \(.headRefOid)"' <<<"$candidates")
+
+          if [ ${#eligible[@]} -eq 0 ]; then
+            echo "no Release PR to merge"
+            exit 0
+          fi
+          if [ ${#eligible[@]} -gt 1 ]; then
+            echo "::error title=More than one Release PR::${eligible[*]} — close all but the current one"
+            exit 1
+          fi
+          read -r number branch sha <<<"${eligible[0]}"
+          {
+            echo "number=$number"
+            echo "branch=$branch"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release PR #$number ($branch) at $sha"
+
+  validate_release_pr:
+    needs: find_release_pr
+    if: needs.find_release_pr.outputs.pr_number != ''
+    uses: ./.github/workflows/validate.yml
+    with:
+      ref: ${{ needs.find_release_pr.outputs.pr_sha }}
+    permissions:
+      contents: read
+
+  merge_release_pr:
+    needs: [find_release_pr, validate_release_pr]
+    if: needs.find_release_pr.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+    steps:
+      - name: Merge the validated commit
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.ref_name }}
+          NUMBER: ${{ needs.find_release_pr.outputs.pr_number }}
+          SHA: ${{ needs.find_release_pr.outputs.pr_sha }}
+          BRANCH: ${{ needs.find_release_pr.outputs.pr_branch }}
+        run: |
+          set -euo pipefail
+          # Merge only when the PR already contains the current main, so the
+          # squash result is exactly the tree that was validated. If main moved,
+          # the push that moved it has queued another run of this workflow,
+          # which rebuilds the PR and validates it again.
+          head=$(gh api "repos/$REPO/git/ref/heads/$BASE" --jq .object.sha)
+          status=$(gh api "repos/$REPO/compare/$head...$SHA" --jq .status)
+          if [ "$status" != "ahead" ]; then
+            echo "main is at $head and the PR is '$status' relative to it — not merging; the next run handles it"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # sha= makes GitHub refuse the merge if the PR head changed after
+          # validation.
+          gh api -X PUT "repos/$REPO/pulls/$NUMBER/merge" \
+            -f merge_method=squash -f sha="$SHA" --jq .message
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null 2>&1 \
+            || echo "::notice::could not delete branch $BRANCH (already gone?)"
+
+  release_after_merge:
+    needs: merge_release_pr
+    if: needs.merge_release_pr.outputs.merged == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      paths_released: ${{ steps.release.outputs.paths_released }}
+      outputs_json: ${{ toJSON(steps.release.outputs) }}
+    steps:
+      # Same action and pin as above; this time only to tag and release the
+      # Release PR that was just merged.
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
+
+      - name: Show action outputs
+        env:
+          OUTPUTS: ${{ toJSON(steps.release.outputs) }}
+        run: printf '%s\n' "$OUTPUTS"
+
+  assets:
+    needs: [release_please, release_after_merge]
+    # Releases come from release_after_merge (the bot merged the PR) or from
+    # release_please (a person merged it). Skipped if anything before failed.
+    # Explicit results instead of failure(): a failed PR lookup or validation
+    # must not block assets for a release that release_please already created.
+    if: >-
+      !cancelled() &&
+      needs.release_please.result == 'success' &&
+      (needs.release_after_merge.result == 'success' || needs.release_after_merge.result == 'skipped') &&
+      (needs.release_after_merge.outputs.releases_created == 'true' ||
+       needs.release_please.outputs.releases_created == 'true')
     strategy:
       fail-fast: false
       matrix:
         # e.g. ["plugins/tech-llm-council", "mcp/subq-snap-mcp"]
-        path: ${{ fromJSON(needs.release_please.outputs.paths_released || '[]') }}
+        path: ${{ fromJSON(needs.release_after_merge.outputs.paths_released || needs.release_please.outputs.paths_released || '[]') }}
     uses: ./.github/workflows/build-release-assets.yml
     with:
-      tag: ${{ fromJSON(needs.release_please.outputs.outputs_json)[format('{0}--tag_name', matrix.path)] }}
+      tag: ${{ fromJSON(needs.release_after_merge.outputs.outputs_json || needs.release_please.outputs.outputs_json)[format('{0}--tag_name', matrix.path)] }}
     permissions:
       contents: write
