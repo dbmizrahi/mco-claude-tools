@@ -1,0 +1,18 @@
+# Credentials — .mcp.json is rendered with live tokens and must never be
+# committed.
+.mcp.json
+
+# Build output (the release workflow writes here)
+dist/
+build-check/
+
+# Connector build output and dependencies
+node_modules/
+mcp/*/dist/
+mcp/*/dist-test/
+*.mcpb
+
+# Scratch and OS noise
+*.py.bak-*
+__pycache__/
+.DS_Store

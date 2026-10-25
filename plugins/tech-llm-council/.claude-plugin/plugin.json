@@ -1,0 +1,16 @@
+{
+  "name": "tech-llm-council",
+  "version": "0.1.0",
+  "description": "Pressure-tests a software, infrastructure or SaaS business decision with a council of 5 technical, product and business advisors, anonymous peer review and a chairman verdict. Optional SubQ Snap decision-model checks through the separate subq-snap-mcp connector add measured signals; without it the council runs unchanged.",
+  "author": {
+    "name": "dbmizrahi",
+    "url": "https://github.com/dbmizrahi"
+  },
+  "keywords": [
+    "llm council",
+    "decision making",
+    "architecture",
+    "tech strategy",
+    "subq snap"
+  ]
+}

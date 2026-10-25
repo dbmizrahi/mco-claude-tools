@@ -1,0 +1,40 @@
+name: Release from tag
+
+# Manual escape hatch for a tag pushed by hand:
+#
+#   git tag tech-llm-council-v0.1.1 && git push origin tech-llm-council-v0.1.1
+#
+# Tags are <name>-v<version>; the plugin or connector is resolved from the tag. The normal
+# path is release-please.yml — merge its Release PR and the tag, release and
+# assets all happen from there. This workflow deliberately does NOT fire for
+# those tags: GitHub does not start new workflow runs for events raised with
+# the default GITHUB_TOKEN, so a bot-created tag never reaches `on: push`.
+# That is why release-please.yml builds assets itself rather than relying on
+# this file.
+#
+# Both routes share the same build via build-release-assets.yml, so there is one
+# definition of what a release contains.
+
+on:
+  push:
+    tags: ["*-v[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. tech-llm-council-v0.1.1)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  assets:
+    uses: ./.github/workflows/build-release-assets.yml
+    with:
+      tag: ${{ github.event.inputs.tag || github.ref_name }}
+    permissions:
+      contents: write

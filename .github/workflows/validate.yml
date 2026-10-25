@@ -1,0 +1,120 @@
+name: Validate marketplace
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  # Builds and checks every connector in mcp/<name>/ (MCP servers released as
+  # Claude desktop extensions): strict typecheck, tests, build, the official
+  # MCPB manifest validator, and a test pack with production dependencies only.
+  connectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Typecheck, test, build and pack each connector
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          manifests=(mcp/*/manifest.json)
+          if [ ${#manifests[@]} -eq 0 ]; then
+            echo "no connectors in mcp/"
+            exit 0
+          fi
+          for manifest in "${manifests[@]}"; do
+            dir=$(dirname "$manifest")
+            name=$(basename "$dir")
+            echo "::group::$name"
+            (
+              cd "$dir"
+              npm ci --no-audit --no-fund
+              npm run typecheck
+              npm test
+              npm run build
+              npx --no-install mcpb validate manifest.json
+            )
+            stage="$RUNNER_TEMP/stage-$name"
+            rm -rf "$stage" && mkdir -p "$stage"
+            cp -R "$dir/manifest.json" "$dir/dist" "$dir/package.json" "$dir/package-lock.json" \
+                  "$dir/README.md" "$stage/"
+            (cd "$stage" && npm ci --omit=dev --no-audit --no-fund)
+            "$dir/node_modules/.bin/mcpb" pack "$stage" "$RUNNER_TEMP/$name.mcpb"
+            "$dir/node_modules/.bin/mcpb" info "$RUNNER_TEMP/$name.mcpb"
+            echo "::endgroup::"
+          done
+
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      # The authoritative gate. Deterministic, no network, no auth.
+      # Covers what the official validator misses: unresolvable plugin sources,
+      # malformed SKILL.md/agent frontmatter, drift between marketplace.json,
+      # plugin.json and the release-please files, committed credentials.
+      - name: Repo validation
+        run: python3 scripts/ci/validate_repo.py
+
+      # Second opinion from the official validator, on manifest shape.
+      # `claude plugin validate .` checks ONLY the marketplace manifest, so every
+      # plugin directory listed in it is validated separately.
+      # Deliberately does not fail the build when the CLI cannot be installed —
+      # a registry outage should not block merges. It DOES fail when the
+      # validator actually ran and rejected a manifest.
+      - name: Official plugin validator
+        run: |
+          set -uo pipefail
+          if ! npm install -g @anthropic-ai/claude-code@latest >/dev/null 2>&1; then
+            echo "::warning title=Official validator skipped::could not install the claude CLI; validate_repo.py already passed"
+            exit 0
+          fi
+          plugin_dirs=$(python3 -c '
+          import json
+          for p in json.load(open(".claude-plugin/marketplace.json"))["plugins"]:
+              if isinstance(p.get("source"), str):
+                  print(p["source"])
+          ')
+          rc=0
+          for target in . $plugin_dirs; do
+            echo "::group::claude plugin validate $target"
+            out=$(claude plugin validate "$target" 2>&1); step_rc=$?
+            echo "$out"
+            echo "::endgroup::"
+            # If it never printed its banner it did not really run (auth, sandbox,
+            # version skew) — warn rather than block.
+            if ! grep -q -E "Validating (marketplace|plugin) manifest" <<<"$out"; then
+              echo "::warning title=Official validator inconclusive::the CLI did not run a validation pass on $target"
+              continue
+            fi
+            if [ "$step_rc" -ne 0 ]; then
+              echo "::error title=Official validator failed::$target"
+              rc=1
+            fi
+          done
+          exit $rc

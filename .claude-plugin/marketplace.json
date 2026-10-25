@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mco-claude-tools",
+  "description": "Public Claude plugins and skills by dbmizrahi.",
+  "owner": {
+    "name": "dbmizrahi",
+    "url": "https://github.com/dbmizrahi"
+  },
+  "plugins": [
+    {
+      "name": "tech-llm-council",
+      "source": "./plugins/tech-llm-council",
+      "category": "productivity",
+      "description": "Pressure-tests a software, infrastructure or SaaS business decision with a council of 5 technical, product and business advisors, anonymous peer review and a chairman verdict. Optional SubQ Snap decision-model checks (routing, file relevance, strongest response, agreement) through the separate subq-snap-mcp connector."
+    }
+  ]
+}
