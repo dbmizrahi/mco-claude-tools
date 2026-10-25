@@ -1,0 +1,72 @@
+name: Release Please
+
+# Versions are derived from conventional commits — nothing is bumped by hand.
+#
+#   fix:              -> patch     feat:             -> minor
+#   feat!: / BREAKING CHANGE:      -> major
+#
+# One release-please package per plugin and per connector (see
+# release-please-config.json). On each push to main the bot opens or updates one
+# Release PR per package whose directory changed; the PR bumps that plugin's
+# .claude-plugin/plugin.json (or that connector's package.json, package-lock.json
+# and manifest.json) and writes its CHANGELOG.md. Merging it creates the tag
+# <name>-v<version> and the GitHub release.
+#
+# The asset build runs HERE, in the same workflow run, rather than in a separate
+# tag-triggered workflow. GitHub does not start a new workflow run for events
+# raised with the default GITHUB_TOKEN, so a tag created by this bot would never
+# fire `on: push: tags`. Building here avoids needing a PAT.
+#
+# Repo/org setting this depends on: Settings -> Actions -> General -> Workflow
+# permissions -> "Allow GitHub Actions to create and approve pull requests".
+# `permissions: pull-requests: write` below is necessary but not sufficient.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release_please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      paths_released: ${{ steps.release.outputs.paths_released }}
+      # Per-package outputs are keyed "<path>--tag_name" etc. Pass the whole
+      # map on so the matrix below can pick its own entry.
+      outputs_json: ${{ toJSON(steps.release.outputs) }}
+    steps:
+      # Pinned to a commit, not a moving tag. v5.0.0, released 2026-04-22;
+      # its only breaking change from v4 was the Node 24 runtime bump.
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Show action outputs
+        env:
+          OUTPUTS: ${{ toJSON(steps.release.outputs) }}
+        run: printf '%s\n' "$OUTPUTS"
+
+  assets:
+    needs: release_please
+    if: needs.release_please.outputs.releases_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        # e.g. ["plugins/tech-llm-council", "mcp/subq-snap-mcp"]
+        path: ${{ fromJSON(needs.release_please.outputs.paths_released || '[]') }}
+    uses: ./.github/workflows/build-release-assets.yml
+    with:
+      tag: ${{ fromJSON(needs.release_please.outputs.outputs_json)[format('{0}--tag_name', matrix.path)] }}
+    permissions:
+      contents: write

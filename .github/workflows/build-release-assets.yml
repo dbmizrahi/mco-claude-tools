@@ -1,0 +1,289 @@
+name: Build release assets
+
+# Reusable. Two callers:
+#   release-please.yml  — after the bot creates a release (the normal path),
+#                         once per released package
+#   release.yml         — a hand-pushed tag (the escape hatch)
+# Publishing is idempotent so both work: it creates the release only if one does
+# not already exist, then uploads with --clobber.
+#
+# Everything is derived from the tag <name>-v<version>. Two kinds of package:
+#   plugin     — listed in .claude-plugin/marketplace.json. The archive is the
+#                plugin directory alone, with .claude-plugin/plugin.json at the
+#                zip root — the Cowork .plugin format and what
+#                `claude --plugin-dir <zip>` loads.
+#   connector  — mcp/<name>/manifest.json, an MCP server released as a Claude
+#                desktop extension (.mcpb), packed with production
+#                dependencies only.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build and attach assets to: <name>-v<version> (e.g. tech-llm-council-v0.1.1, subq-snap-mcp-v0.1.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Resolve package from tag
+        id: v
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^([a-z0-9]+(-[a-z0-9]+)*)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::tag '$TAG' is not <name>-v<major.minor.patch>"
+            exit 1
+          fi
+          NAME="${BASH_REMATCH[1]}"
+          VERSION="${BASH_REMATCH[3]}"
+          # marketplace.json is the one place that says where a plugin lives.
+          DIR=$(python3 - "$NAME" <<'PY'
+          import json, sys
+          name = sys.argv[1]
+          for entry in json.load(open(".claude-plugin/marketplace.json"))["plugins"]:
+              if entry["name"] == name and isinstance(entry.get("source"), str):
+                  print(entry["source"].removeprefix("./").rstrip("/"))
+                  break
+          PY
+          )
+          if [ -n "$DIR" ] && [ -f "$DIR/.claude-plugin/plugin.json" ]; then
+            KIND=plugin
+            MANIFEST="$DIR/.claude-plugin/plugin.json"
+          elif [ -f "mcp/$NAME/manifest.json" ]; then
+            KIND=connector
+            DIR="mcp/$NAME"
+            MANIFEST="$DIR/manifest.json"
+          else
+            echo "::error::'$NAME' is neither a plugin in .claude-plugin/marketplace.json nor a connector in mcp/$NAME/"
+            exit 1
+          fi
+          read -r MANIFEST_NAME MANIFEST_VERSION < <(
+            python3 -c 'import json, sys; m = json.load(open(sys.argv[1])); print(m["name"], m["version"])' \
+              "$MANIFEST"
+          )
+          # Tripwire: if release-please ever stops bumping the manifest, fail
+          # here rather than shipping a mislabelled archive.
+          if [ "$MANIFEST_NAME" != "$NAME" ] || [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+            echo "::error::tag $TAG does not match $MANIFEST (name $MANIFEST_NAME, version $MANIFEST_VERSION)"
+            exit 1
+          fi
+          {
+            echo "kind=$KIND"
+            echo "name=$NAME"
+            echo "version=$VERSION"
+            echo "dir=$DIR"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $KIND $TAG from $DIR"
+
+      - name: Validate source tree
+        run: python3 scripts/ci/validate_repo.py
+
+      # ------------------------------------------------------------- plugin
+      - name: Build plugin archive
+        if: steps.v.outputs.kind == 'plugin'
+        env:
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+          DIR: ${{ steps.v.outputs.dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ZIP="dist/${NAME}-${VERSION}.zip"
+          # Archive the plugin SUBTREE (HEAD:<dir>), so plugin.json sits at the
+          # zip root. git archive emits tracked files only — untracked files
+          # cannot reach a release.
+          git archive --format=zip -o "$ZIP" "HEAD:${DIR}"
+          cp "$ZIP" "dist/${NAME}.plugin"
+          echo "--- archive contents ---"
+          unzip -l "$ZIP"
+
+      - name: Validate the plugin archive
+        if: steps.v.outputs.kind == 'plugin'
+        env:
+          ZIP: dist/${{ steps.v.outputs.name }}-${{ steps.v.outputs.version }}.zip
+        run: |
+          set -euo pipefail
+          rm -rf build-check && mkdir build-check
+          unzip -q "$ZIP" -d build-check
+          # Check what actually ships, not just what is in the repo.
+          if [ ! -f build-check/.claude-plugin/plugin.json ]; then
+            echo "::error::plugin.json is not at the archive root"
+            exit 1
+          fi
+          python3 scripts/ci/validate_repo.py --plugin build-check
+          for bad in .git .github scripts/ci config/config.json .mcp.json \
+                     .claude-plugin/marketplace.json \
+                     release-please-config.json .release-please-manifest.json; do
+            if [ -e "build-check/$bad" ]; then
+              echo "::error::$bad leaked into the release archive"
+              exit 1
+            fi
+          done
+          if find build-check \( -name '.DS_Store' -o -name '__pycache__' -o -name '*.bak-*' \) | grep -q .; then
+            echo "::error::scratch files leaked into the release archive"
+            exit 1
+          fi
+          echo "artifact is clean"
+
+      # ---------------------------------------------------------- connector
+      - uses: actions/setup-node@v4
+        if: steps.v.outputs.kind == 'connector'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Test and build the connector
+        if: steps.v.outputs.kind == 'connector'
+        working-directory: ${{ steps.v.outputs.dir }}
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+          npm run build
+          npx --no-install mcpb validate manifest.json
+
+      - name: Pack the connector (.mcpb)
+        if: steps.v.outputs.kind == 'connector'
+        env:
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+          DIR: ${{ steps.v.outputs.dir }}
+        run: |
+          set -euo pipefail
+          MCPB="$GITHUB_WORKSPACE/$DIR/node_modules/.bin/mcpb"
+          rm -rf build-stage && mkdir -p build-stage dist
+          # The bundle is the manifest, the compiled server, the README and the
+          # production dependencies — no sources, tests or dev tools.
+          cp -R "$DIR/manifest.json" "$DIR/dist" "$DIR/package.json" "$DIR/package-lock.json" \
+                "$DIR/README.md" build-stage/
+          (cd build-stage && npm ci --omit=dev --no-audit --no-fund)
+          "$MCPB" validate build-stage/manifest.json
+          "$MCPB" pack build-stage "dist/${NAME}-${VERSION}.mcpb"
+          "$MCPB" info "dist/${NAME}-${VERSION}.mcpb"
+
+      - name: Validate the connector bundle
+        if: steps.v.outputs.kind == 'connector'
+        env:
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          rm -rf build-check && mkdir build-check
+          unzip -q "dist/${NAME}-${VERSION}.mcpb" -d build-check
+          read -r BUNDLE_NAME BUNDLE_VERSION ENTRY < <(
+            python3 -c 'import json; m = json.load(open("build-check/manifest.json")); print(m["name"], m["version"], m["server"]["entry_point"])'
+          )
+          if [ "$BUNDLE_NAME" != "$NAME" ] || [ "$BUNDLE_VERSION" != "$VERSION" ]; then
+            echo "::error::bundle manifest says $BUNDLE_NAME $BUNDLE_VERSION, tag says $NAME $VERSION"
+            exit 1
+          fi
+          if [ ! -f "build-check/$ENTRY" ]; then
+            echo "::error::entry point $ENTRY is missing from the bundle"
+            exit 1
+          fi
+          for bad in src test tsconfig.json node_modules/typescript node_modules/@anthropic-ai/mcpb; do
+            if [ -e "build-check/$bad" ]; then
+              echo "::error::$bad leaked into the bundle"
+              exit 1
+            fi
+          done
+          echo "bundle is clean"
+
+      # ------------------------------------------------------------- common
+      - name: Checksums
+        id: sums
+        env:
+          KIND: ${{ steps.v.outputs.kind }}
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$KIND" = plugin ]; then
+            ASSETS="${NAME}-${VERSION}.zip ${NAME}.plugin"
+          else
+            ASSETS="${NAME}-${VERSION}.mcpb"
+          fi
+          # shellcheck disable=SC2086 # ASSETS is a space-separated file list
+          (cd dist && sha256sum $ASSETS > SHA256SUMS && cat SHA256SUMS)
+          echo "assets=$ASSETS" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes
+        env:
+          KIND: ${{ steps.v.outputs.kind }}
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          MARKETPLACE=$(python3 -c 'import json; print(json.load(open(".claude-plugin/marketplace.json"))["name"])')
+          if [ "$KIND" = plugin ]; then
+            {
+              echo "## Install"
+              echo
+              echo '```'
+              echo "/plugin marketplace add ${REPO}"
+              echo "/plugin install ${NAME}@${MARKETPLACE}"
+              echo '```'
+              echo
+              echo "Cowork: download \`${NAME}.plugin\` below and open it in the Claude desktop app."
+              echo
+              echo "Claude Code without the marketplace: \`claude --plugin-dir ${NAME}-${VERSION}.zip\` (loads for that session only)."
+              echo
+              echo "\`.zip\` and \`.plugin\` are the same archive under two names; verify with \`SHA256SUMS\`."
+              echo "Setup steps after installing are in the plugin's README."
+            } > dist/NOTES.md
+          else
+            {
+              echo "## Install"
+              echo
+              echo "Download \`${NAME}-${VERSION}.mcpb\` below and open it in the Claude desktop app, then enter your settings when the app asks."
+              echo
+              echo "Verify the download with \`SHA256SUMS\`. Settings and the data the connector sends are described in its README (\`mcp/${NAME}/README.md\`)."
+            } > dist/NOTES.md
+          fi
+          cat dist/NOTES.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+          ASSETS: ${{ steps.sums.outputs.assets }}
+        run: |
+          set -euo pipefail
+          # release-please will already have created the release on the normal
+          # path; a hand-pushed tag will not have one. Handle both.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists — attaching assets"
+          else
+            echo "creating release $TAG"
+            gh release create "$TAG" \
+              --title "${NAME} ${VERSION}" \
+              --notes-file dist/NOTES.md
+          fi
+          files=()
+          for a in $ASSETS; do files+=("dist/$a"); done
+          gh release upload "$TAG" "${files[@]}" dist/SHA256SUMS --clobber
+          echo "assets attached to $TAG"
