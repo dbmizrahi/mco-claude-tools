@@ -16,3 +16,5 @@ mcp/*/dist-test/
 *.py.bak-*
 __pycache__/
 .DS_Store
+
+.claude/**
