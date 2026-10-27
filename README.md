@@ -10,7 +10,7 @@ and served from its `main` branch.
 
 | Plugin | What it does | Docs |
 |---|---|---|
-| `tech-llm-council` | Pressure-tests a software, infrastructure or SaaS business decision with 5 technical, product and business advisors, anonymous peer review and a chairman verdict; optional SubQ Snap checks through the `subq-snap-mcp` connector | [plugins/tech-llm-council](plugins/tech-llm-council/README.md) |
+| `tech-llm-council` | Pressure-tests a software, infrastructure or SaaS business decision with 5 technical, product and business advisors, anonymous peer review and a chairman verdict; with the optional `subq-snap-mcp` connector, SubQ Snap picks each advisor's answer and the chairman's verdict from fixed answer options, improving them until one is a clear winner | [plugins/tech-llm-council](plugins/tech-llm-council/README.md) |
 
 ## Connectors
 

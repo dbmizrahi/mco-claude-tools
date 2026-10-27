@@ -104,9 +104,14 @@ If none stands out, use the Infrastructure Engineer: running cost per customer i
 
 ## SubQ Snap checks (optional)
 
-SubQ Snap is a decision model: it reads a state and answers named questions with probabilities instead of text. The council uses it for four fixed-choice judgments (steps 1, 3 and 4). It never replaces an advisor, a reviewer or the chairman, and its answers are signals, not votes.
+SubQ Snap is a decision model: it reads a state and answers named questions with probabilities instead of text. The council uses it in two ways:
 
-**Where it comes from.** Snap is provided by the separate SubQ Snap connector, `subq-snap-mcp` (a Claude desktop extension from the same marketplace). It adds one tool, `decide`; depending on the host its full name looks like `mcp__subq-snap-mcp__decide` or `mcp__<prefix>__subq-snap-mcp__decide`. Before step 1, check whether a tool named `decide` from `subq-snap-mcp` is available (load it through tool search if your tools are deferred). If it isn't, skip every Snap check in this session and say so once in the verdict. Never ask the user for a SubQ key and never call the SubQ API any other way.
+- **Advice** in steps 1 and 3 (roster, file selection, strongest response). These answers are signals, not votes.
+- **Answer selection** in steps 2 and 4. Snap picks each advisor's answer and the chairman's verdict and first step from fixed answer options (see "Snap answer selection" below). A clear pick is binding.
+
+The advisors, the reviewers and the chairman still write all the text.
+
+**Where it comes from.** Snap is provided by the separate SubQ Snap connector, `subq-snap-mcp` (a Claude desktop extension from the same marketplace). It adds one tool, `decide`; its full name depends on the host, e.g. `mcp__subq-snap-mcp__decide`, `mcp__<prefix>__subq-snap-mcp__decide` or `mcp__<prefix>__SubQ_Snap__decide`. Before step 1, check whether a `decide` tool from the SubQ Snap connector is available (if your tools are deferred, load it through tool search, e.g. "SubQ Snap decide"). If it isn't, skip every Snap check in this session and say so once in the verdict. Never ask the user for a SubQ key and never call the SubQ API any other way.
 
 **How to call it.** One call per check, with `{"state": ..., "questions": {...}}`. Question types: `noul` (yes/no; `instructions`, optional `criteria` `{"true": "...", "false": "..."}`), `choice` (`criteria` maps each option to a description or null) and `score` (`criteria` is a list of levels, lowest first). One call holds up to 128 questions; put all the questions for one step into one call.
 
@@ -117,7 +122,54 @@ The tool returns one JSON object as text:
 
 **Fallback.** If a call is skipped, carry on exactly as this skill describes without Snap, and don't retry it in the same session. If it was skipped because the API key is not set or rejected (HTTP 401 or 403), skip all later Snap calls in that session.
 
-**Data.** Whatever goes into `state` is sent to SubQ. Include only what the check needs: the user's question, the framed question, the advisor responses, and, in step 1B, the candidate files the user's project already exposes to this session.
+**Data.** Whatever goes into `state` and `questions` is sent to SubQ. Include only what the check needs: the user's question, the framed question, the advisor responses, the peer reviews, the answer options and their descriptions, and, in step 1B, the candidate files the user's project already exposes to this session.
+
+---
+
+## Snap answer selection (steps 2 and 4)
+
+Each advisor and the chairman choose their answer from a fixed list of answer options. Snap picks the option. When its pick isn't clear, the agent that owns the decision improves the options and asks again.
+
+**Constants.** Used everywhere below by name:
+
+- `TARGET_TOP = 0.6`: the lowest averaged probability the top option may have
+- `TARGET_LEAD = 0.2`: the smallest lead the top option may have over the second
+- `MAX_SNAP_CALLS = 5`: Snap calls per decision, the first call plus up to 4 replacements
+
+**Advisor answer options.** Built from the option IDs of step 1C (`<opt>` below):
+
+- `adopt_<opt>`: "Do <option> as proposed; from the <Role>'s view the risks are acceptable."
+- `adopt_<opt>_with_conditions`: "Do <option> only once the <Role>'s conditions are met: <role condition>."
+- `reject_all`: "None of the options; keep the current state."
+- `reframe`: "The question is wrong; the real problem is elsewhere."
+- `defer_need_data`: "Can't decide without facts that are missing from the question."
+
+Role conditions: Software Architect, named design changes; Infrastructure Engineer, named operational safeguards (monitoring, rollback, capacity); Security Engineer, named security controls; Product Manager, a named user outcome and how it is measured; CTO, a budget and time limit; CMO, a confirmed buyer segment and sales channel; CFO, unit economics that meet a stated threshold.
+
+**Chairman answer options.** Two decisions:
+
+- `chairman_verdict`: for every `<opt>`, `go_<opt>` ("Recommend <option> now") and `go_<opt>_staged` ("Recommend <option> through a limited first stage or pilot"); plus `no_go` ("Recommend none of the options"), `defer_after_first_step` ("Decide once the first step has produced its result") and `reframe` ("The council answered the wrong question").
+- `first_step`: `proof_of_concept`, `load_test`, `cost_estimate`, `measurement`, `customer_interviews`, `pricing_test`, each with a one-line description of what it would establish for this question.
+
+**The decision loop.** For one decision:
+
+1. **Call.** Make one `decide` call. Ask each open decision twice in it: `<name>_a` with the options in list order and `<name>_b` with the same options in reverse order. `instructions` says who decides and from which focus.
+2. **Average.** For every option, average its probability from `_a` and `_b`.
+3. **Test.** The top option is a clear winner when all three hold: its averaged probability is at least `TARGET_TOP`; it leads the second option by at least `TARGET_LEAD`; `_a` and `_b` chose the same option. A clear winner is the answer; stop.
+4. **Improve.** No clear winner and fewer than `MAX_SNAP_CALLS` calls made:
+   - Read the scores: which options lead, how far apart they are, what difference in substance separates them, why the lowest one lost.
+   - Remove the option with the lowest averaged probability. Never remove the current top option.
+   - Add one new option that improves the substance of the leading options, for example: add or drop a condition, narrow the scope, stage the rollout, change who carries the risk, set a limit. It must differ in substance from every option in the list; a reworded option isn't allowed. Its ID is `<base>_r<n>`, where `<base>` is the ID of the option it builds on and `<n>` the number of the next call (e.g. `adopt_modularize_first_r2`); its description is one sentence.
+   - The list keeps the same number of options. Go to 1.
+5. **Stop without a clear winner.** After `MAX_SNAP_CALLS` calls, take the option with the highest averaged probability from any call and mark it "below target".
+
+**When Snap isn't available.** Without the `decide` tool, or when a call is skipped, the agent picks the option itself from the same list and says why in one line, marked "own pick (SubQ Snap skipped: <reason>)". If a call is skipped in the middle of the loop, use the best option so far, marked "below target (SubQ Snap skipped: <reason>)". The fallback rules above apply.
+
+**Result line.** Each decision ends with one line:
+
+`Pick: <option ID> — <description> | Snap <averaged probability> | calls <n> | <clear winner | below target | own pick>`
+
+**Snap record.** For each call, keep the option list, the probabilities in both orders, the one- or two-sentence analysis, and the removed and added option. It goes into the transcript (step 6), not into the verdict.
 
 ---
 
@@ -162,6 +214,7 @@ For business questions, also fill gaps in the market facts: if web search is ava
    - Business value: target customers and their problem, what they use today (competitors, alternatives), pricing and revenue model, current numbers (customers, revenue, churn, acquisition cost), stage, team and budget, with the source link of each fact taken from the web
 4. What's at stake (cost of being wrong, how hard it is to reverse)
 5. Important facts that are unknown, listed as unknowns rather than guessed
+6. The options, 2-6 of them, each with a snake_case ID (at most 40 characters) and a one-line description, e.g. `modularize_first`: enforce module boundaries inside the monolith. If the user asks about one option only ("should we do X?"), the options are `do_<x>` and `keep_current`. These IDs build the answer options in steps 2 and 4.
 
 Don't add your own opinion. Don't steer it. But DO include the concrete details (versions, numbers, prices, configurations) the advisors need: they work only from this text.
 
@@ -171,9 +224,11 @@ Keep the roster and the framed question; they go into the transcript if the user
 
 ### step 2: convene the council (5 sub-agents in parallel)
 
-Spawn the 5 advisors of the chosen roster simultaneously as sub-agents, in a single message. Each gets the template below, filled with their role, perspective and focus (from the descriptions above) and the framed question.
+Spawn the 5 advisors of the chosen roster simultaneously as sub-agents, in a single message. Each gets the template below, filled with their role, perspective and focus (from the descriptions above), the framed question, and their answer options from "Snap answer selection", with descriptions written for that role.
 
-Each advisor should produce a response of 150-300 words. Long enough to be substantive, short enough to be scannable.
+Each advisor first picks its answer with the decision loop, then writes a response of 150-300 words for that answer. Long enough to be substantive, short enough to be scannable. Each advisor runs its own loop, so the five stay independent and parallel.
+
+Set `SUBQ SNAP` to `not available (<reason>)` when the check before step 1 found no `decide` tool, or an earlier call was skipped with HTTP 401 or 403; otherwise `available`.
 
 **Sub-agent prompt template:**
 
@@ -189,18 +244,39 @@ The question brought to the council:
 [framed question]
 ---
 
-Respond independently from your professional perspective. Be direct and specific: name the concrete facts, numbers, costs and risks that matter. Don't hedge or try to be balanced. Lean fully into your role. If you see a fatal flaw, say it. If you see a big opportunity, say it. The other advisors cover the angles you're not covering; the synthesis comes later.
+YOUR ANSWER OPTIONS:
 
-Work only from the information above. Don't read files, run commands or search the web. If a fact you need is missing, state your assumption in one line.
+[option ID]: [description]
+[one line per option]
 
-Keep your response between 150-300 words. No preamble. Go straight into your analysis.
+SUBQ SNAP: [available | not available (<reason>)]
+
+First, pick your answer.
+
+- If SubQ Snap is available: load the `decide` tool from the SubQ Snap connector (tool search: "SubQ Snap decide") and run this decision loop, at most [MAX_SNAP_CALLS] calls:
+
+  [the decision loop, the clear-winner test and the "below target" rule from "Snap answer selection", with the constants filled in]
+
+  Use state = the question above, as text. The question names are [role]_verdict_a and [role]_verdict_b; instructions = "You are the [Role]. Your focus: [focus]. Which answer would you give to this question?"
+- If SubQ Snap is not available, or a call is skipped: pick the option yourself and say why in one line.
+
+Then respond independently from your professional perspective, for the answer you picked. Be direct and specific: name the concrete facts, numbers, costs and risks that matter. Don't hedge or try to be balanced. Lean fully into your role. If you see a fatal flaw, say it. If you see a big opportunity, say it. The other advisors cover the angles you're not covering; the synthesis comes later.
+
+Work only from the information above. Don't read files, run commands or search the web; the `decide` tool is the only tool you use. If a fact you need is missing, state your assumption in one line.
+
+Start with the result line:
+Pick: <option ID> — <description> | Snap <averaged probability> | calls <n> | <clear winner | below target | own pick>
+
+Then keep your response between 150-300 words. No preamble. Go straight into your analysis.
+
+After the response, add "SNAP RECORD:" with each call's option list, probabilities in both orders, your analysis, and the removed and added option. It doesn't count toward the word limit.
 ```
 
 ### step 3: peer review (5 sub-agents in parallel)
 
 This is the step that makes the council more than just "ask 5 times." It's the core of Karpathy's insight.
 
-Collect all 5 advisor responses. Anonymize them as Response A through E (randomize which advisor maps to which letter so there's no positional bias). Keep the mapping for the chairman.
+Collect all 5 advisor responses. Keep each SNAP RECORD for the transcript and remove it from the response. Shorten the result line to `Pick: <option ID> — <description>`, so the Snap numbers don't sway the reviewers. Anonymize the responses as Response A through E (randomize which advisor maps to which letter so there's no positional bias). Keep the mapping for the chairman.
 
 Spawn 5 new sub-agents in a single message. Each reviewer sees all 5 anonymized responses and answers the three questions in the template.
 
@@ -245,7 +321,9 @@ Keep your review under 200 words. Be direct.
 
 This is the final step. One agent gets everything: the framed question, all 5 advisor responses (de-anonymized, labeled by role), the letter-to-advisor mapping, and all 5 peer reviews. It produces the final verdict in the structure below. The chairman can disagree with the majority if the reasoning supports it.
 
-*Snap check (optional).* Before spawning the chairman, make one `decide` call with `state` = `{"question": <framed question>, "responses": {<role>: <response>, ...}}` and the 10 pairwise questions `agree_<role1>_<role2>` (noul: "Do <role1> and <role2> reach the same recommendation?"; roles in snake_case, e.g. `agree_cto_product_manager`). Fill the `SNAP SIGNALS` block of the template with the agreement probabilities and the step 3 averages. If Snap was skipped in steps 3 and 4, write `none (SubQ Snap skipped: <reason>)` there instead.
+*Snap answer selection.* Before writing, the chairman picks two decisions with the decision loop: `chairman_verdict` and `first_step` (options in "Snap answer selection"). Both go into the same calls; a decision that has a clear winner is left out of later calls. The first call also holds the 10 pairwise questions `agree_<role1>_<role2>` (noul: "Do <role1> and <role2> reach the same recommendation?"; roles in snake_case, e.g. `agree_cto_product_manager`). They are asked once and are not part of the loop.
+
+Pass the chairman the advisor responses with their full result lines and without their SNAP RECORDs. Fill the `SNAP SIGNALS` block with the step 3 averages, or `none (SubQ Snap skipped: <reason>)`. Set `SUBQ SNAP` as in step 2.
 
 **Chairman prompt template:**
 
@@ -271,9 +349,32 @@ PEER REVIEWS (letter-to-advisor mapping: [mapping]):
 
 SNAP SIGNALS (advisory, not votes):
 
-[strongest-response probability per advisor; agreement probability per pair of advisors; or "none"]
+[strongest-response probability per advisor from peer review, or "none (SubQ Snap skipped: <reason>)"]
 
-Produce the council verdict using this exact structure:
+YOUR ANSWER OPTIONS:
+
+chairman_verdict:
+[option ID]: [description]
+[one line per option]
+
+first_step:
+[option ID]: [description]
+[one line per option]
+
+SUBQ SNAP: [available | not available (<reason>)]
+
+First, pick your verdict and your first step.
+
+- If SubQ Snap is available: load the `decide` tool from the SubQ Snap connector (tool search: "SubQ Snap decide") and run this decision loop for both decisions together, at most [MAX_SNAP_CALLS] calls:
+
+  [the decision loop, the clear-winner test and the "below target" rule from "Snap answer selection", with the constants filled in]
+
+  Use state = {"question": <the question above>, "responses": {<role>: <response>, ...}, "reviews": [<the five peer reviews>]}. The question names are chairman_verdict_a, chairman_verdict_b, first_step_a and first_step_b; instructions = "You are the Chairman. Weigh the advisors' reasoning, not their headcount. Which answer should the council give?" In the first call only, also ask the 10 questions agree_<role1>_<role2> (noul: "Do <role1> and <role2> reach the same recommendation?"; roles in snake_case, e.g. agree_cto_product_manager).
+- If SubQ Snap is not available, or a call is skipped: pick both yourself and say why in one line.
+
+A clear pick is binding: write the verdict around it. If you disagree with it, say why in "The Recommendation", but keep the pick.
+
+Then produce the council verdict using this exact structure:
 
 ## Where the Council Agrees
 [Points multiple advisors converged on independently. These are high-confidence signals.]
@@ -285,16 +386,18 @@ Produce the council verdict using this exact structure:
 [Things that only emerged through peer review. Things individual advisors missed that others flagged.]
 
 ## The Recommendation
-[A clear, direct recommendation. Not "it depends." Not "consider both sides." A real answer with reasoning.]
+[Start with the result line for chairman_verdict. Then a clear, direct recommendation. Not "it depends." Not "consider both sides." A real answer with reasoning.]
 
 ## The One Thing to Do First
-[A single concrete next step, such as a proof of concept, a load test, a cost estimate, a measurement, customer interviews or a pricing test. Not a list. One thing.]
+[Start with the result line for first_step. Then a single concrete next step, such as a proof of concept, a load test, a cost estimate, a measurement, customer interviews or a pricing test. Not a list. One thing.]
 
 Weigh reasoning, not headcount: three of the five seats share one perspective, so never decide by counting how many advisors made a point. Side with a single dissenter if their reasoning is strongest, and say why.
 
-Treat the SNAP SIGNALS as measurements from a separate decision model, not as votes: use the agreement probabilities to check "Where the Council Agrees" and "Where the Council Clashes", and if your verdict contradicts a strong signal (0.8 or higher), say why.
+Treat the SNAP SIGNALS and the agreement probabilities as measurements from a separate decision model, not as votes: use the agreement probabilities to check "Where the Council Agrees" and "Where the Council Clashes", and if your verdict contradicts a strong signal (0.8 or higher), say why.
 
 Be direct. Don't hedge. The whole point of the council is to give the user clarity they couldn't get from a single perspective.
+
+After the verdict, add "SNAP RECORD:" with each call's option lists, probabilities in both orders, the agreement probabilities, your analysis, and the removed and added options.
 ```
 
 ### step 5: present the verdict in chat
@@ -320,15 +423,22 @@ Format the output as:
 
 ### The One Thing to Do First
 {content}
+
+### Picks
+| Decision | Pick | Snap | Calls | Result |
+|---|---|---|---|---|
+| {Role, one row per advisor} | {option ID} | {averaged probability} | {n} | {clear winner / below target / own pick} |
+| Chairman: verdict | ... | ... | ... | ... |
+| Chairman: first step | ... | ... | ... | ... |
 ```
 
 Keep it scannable. Use bullet points. If the framed question used facts from the web, end with a short "Sources" list of those links.
 
-End with one line on SubQ Snap: either "SubQ Snap signals used: <which steps>" or "SubQ Snap skipped: <reason>".
+End with one line on SubQ Snap: either "SubQ Snap used: <which steps>, <total number of Snap calls> calls" or "SubQ Snap skipped: <reason>".
 
 ### step 6: save the transcript (only on request)
 
-Save a transcript only when the user asks for one. Write it to `council-transcript-[timestamp].md` in the folder the user names; if they don't name one, use the project's `active/` directory if it exists, otherwise ask where to save it. Include the roster, the framed question, the five advisor responses labeled by role, the five peer reviews with the letter-to-advisor mapping, and the verdict.
+Save a transcript only when the user asks for one. Write it to `council-transcript-[timestamp].md` in the folder the user names; if they don't name one, use the project's `active/` directory if it exists, otherwise ask where to save it. Include the roster, the framed question, the five advisor responses labeled by role, the five peer reviews with the letter-to-advisor mapping, the verdict, and the SNAP RECORD of every advisor and the chairman.
 
 ---
 
@@ -336,7 +446,11 @@ Save a transcript only when the user asks for one. Write it to `council-transcri
 
 **User:** "Council this: we're 4 engineers running a Node.js monolith on AWS ECS Fargate with one PostgreSQL database on RDS. About 2,000 business customers, peaks around 300 requests per second. Two engineers want to split it into microservices on Kubernetes (EKS) before we build the enterprise tier. Is this the right move?"
 
-**Software Architect:** "Microservices don't fix a design problem; they spread it across the network. Where does the monolith actually hurt? If modules change together, splitting them gives you a distributed monolith: every release still touches several services, now with network calls and partial failures in between. Enforce module boundaries inside the monolith first..."
+Options from step 1C: `split_to_eks` (split into microservices on EKS) and `modularize_first` (enforce module boundaries inside the monolith). Every advisor's response starts with a result line; only the Software Architect's is shown here.
+
+*Software Architect's decision loop (illustrative numbers):* Call 1: `adopt_modularize_first_with_conditions` 0.41, `reframe` 0.33, the rest below 0.1. No clear winner. The analysis: the two leaders split on whether the real problem is code layout or data ownership. `adopt_split_to_eks` (lowest) is replaced by `adopt_modularize_first_r2`: "Modularize first, starting with ownership of the tables each module writes." Call 2: `adopt_modularize_first_r2` 0.68, lead 0.31, same pick in both orders. Clear winner.
+
+**Software Architect:** "Pick: `adopt_modularize_first_r2` — Modularize first, starting with ownership of the tables each module writes | Snap 0.68 | calls 2 | clear winner. Microservices don't fix a design problem; they spread it across the network. Where does the monolith actually hurt? If modules change together, splitting them gives you a distributed monolith: every release still touches several services, now with network calls and partial failures in between. Enforce module boundaries inside the monolith first..."
 
 **Infrastructure Engineer:** "300 requests per second is a small load for a horizontally scaled service on Fargate. EKS adds cluster version upgrades, add-ons, ingress, and a pipeline, dashboards and alerts per service. With four engineers, someone becomes a part-time platform team. Every request that crosses services needs distributed tracing to debug..."
 
@@ -354,9 +468,9 @@ Save a transcript only when the user asks for one. Write it to `council-transcri
 
 *Blind spots caught:* Peer review flagged that no advisor asked about the shared database. Services that share one PostgreSQL schema stay coupled however the code is split. Data ownership, not code layout, is the real boundary problem.
 
-*Recommendation:* Don't move to microservices or EKS now. Stay on Fargate, give each module ownership of its own tables inside the one database, and ship the enterprise tier. Revisit when a specific module needs to scale or deploy independently and the numbers show it.
+*Recommendation:* Pick: `go_modularize_first_staged` — Recommend modularize first through a limited first stage | Snap 0.71 | calls 1 | clear winner. Don't move to microservices or EKS now. Stay on Fargate, give each module ownership of its own tables inside the one database, and ship the enterprise tier. Revisit when a specific module needs to scale or deploy independently and the numbers show it.
 
-*One thing to do first:* Map which modules change together (from the last six months of commits) and which tables each module reads and writes (from the code). That map decides any future boundaries.
+*One thing to do first:* Pick: `measurement` — Measure which modules change together and which tables they touch | Snap 0.64 | calls 2 | clear winner. Map which modules change together (from the last six months of commits) and which tables each module reads and writes (from the code). That map decides any future boundaries.
 
 ---
 
@@ -365,4 +479,6 @@ Save a transcript only when the user asks for one. Write it to `council-transcri
 - **Always spawn all 5 advisors in parallel.** Sequential spawning wastes time and lets earlier responses bleed into later ones.
 - **Always anonymize for peer review.** If reviewers know which advisor said what, they'll defer to certain roles instead of evaluating on merit.
 - **The chairman weighs reasoning, not headcount.** If 4 out of 5 advisors say "do it" but the 1 dissenter's reasoning is strongest, the chairman sides with the dissenter and explains why.
+- **A clear Snap pick is binding.** Advisors and the chairman write for the option Snap picked when it meets `TARGET_TOP` and `TARGET_LEAD` in both orders; disagreement goes into the text, not into a different pick.
+- **Improve options in substance, never reword them.** A new option changes what is proposed (a condition, the scope, the stages, who carries the risk). A reworded option only measures the wording.
 - **Don't council trivial questions.** If the question has one right answer, or it's a lookup, coding, debugging or documentation task, just do it. The council is for genuine uncertainty where multiple perspectives add value.
