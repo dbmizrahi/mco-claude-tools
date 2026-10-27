@@ -7,9 +7,9 @@ where they agree, where they clash, blind spots, the recommendation and the one
 thing to do first. Adapted from Andrej Karpathy's LLM Council.
 
 Optional: [SubQ Snap](https://docs.subq.ai/endpoints/decisions-api/), a decision
-model that answers fixed-choice questions with probabilities, adds measured
-signals to the council through the separate `subq-snap-mcp` connector. Without
-it the council runs unchanged.
+model that answers fixed-choice questions with probabilities, picks each
+advisor's answer and the chairman's verdict from fixed answer options, through
+the separate `subq-snap-mcp` connector. Without it the council runs unchanged.
 
 Part of the `mco-claude-tools` marketplace
 ([dbmizrahi/mco-claude-tools](https://github.com/dbmizrahi/mco-claude-tools)).
@@ -81,19 +81,37 @@ Where Snap works: the Claude desktop app, including Cowork sessions linked to
 that computer. Not in Claude Code or web-only sessions, which don't load
 desktop extensions.
 
-What Snap adds:
+What Snap does:
 
 | Step | Snap question | Used for |
 |---|---|---|
 | 1. Roster | worth a council? / technical or business / which technical advisor | advice on the roster; Claude still decides |
 | 1. Facts | per file: relevant? draft? | picking context files, excluding drafts |
+| 2. Advisors | which answer option would this advisor give? | **picks** each advisor's answer |
 | 3. Peer review | which response is strongest (A–E, run twice with shuffled letters) | a signal for the chairman |
-| 4. Chairman | do these two advisors reach the same recommendation? (10 pairs) | checking agreement and clashes |
+| 4. Chairman | which verdict? which first step? / do these two advisors agree? (10 pairs) | **picks** the verdict and first step; agreement is a signal |
 
-The five advisors, the five text reviewers and the chairman stay as they are.
-Snap answers are signals, not votes.
+How answer selection works:
+
+- Step 1 lists the options being decided between. Each advisor and the
+  chairman get a fixed list of answer options built from them, e.g.
+  `adopt_<option>`, `adopt_<option>_with_conditions`, `reject_all`, `reframe`.
+- Snap answers each question twice, with the options in two different orders,
+  and the probabilities are averaged.
+- A pick counts when it is a clear winner: averaged probability at least 0.6, a
+  lead of at least 0.2 over the second option, and the same pick in both
+  orders. A clear pick is binding; the advisor or chairman writes the text
+  around it.
+- Otherwise the advisor or chairman analyzes the scores, replaces the
+  lowest-scoring option with a new one that changes the substance, and asks
+  again, up to 5 Snap calls per decision. If no clear winner appears, the best
+  option across all calls is used and marked "below target".
+- The verdict ends with a table of every pick, its probability, the number of
+  calls and whether it was a clear winner.
 
 Data sent to SubQ: the user's question, the framed question, the advisor
-responses and, in step 1, the contents of candidate project files. SubQ
-bills per input token; output is free. A council session makes 4 Snap calls,
-plus one or more in step 1 when it pre-selects files.
+responses, the peer reviews, the answer options and, in step 1, the contents
+of candidate project files. SubQ bills per input token; output is free. A
+council session makes at least 9 Snap calls (1 in step 1, 5 for the advisors,
+2 in step 3, 1 for the chairman) and at most 33, plus one or more in step 1
+when it pre-selects files.
