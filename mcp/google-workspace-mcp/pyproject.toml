@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "google-workspace-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Slides, Chat): one Google account per server, signed in with an OAuth refresh token"
 readme = "README.md"
 requires-python = ">=3.10"
