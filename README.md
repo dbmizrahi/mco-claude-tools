@@ -11,6 +11,7 @@ and served from its `main` branch.
 | Plugin | What it does | Docs |
 |---|---|---|
 | `tech-llm-council` | Pressure-tests a software, infrastructure or SaaS business decision with 5 technical, product and business advisors, anonymous peer review and a chairman verdict; with the optional `subq-snap-mcp` connector, SubQ Snap picks each advisor's answer and the chairman's verdict from fixed answer options, improving them until one is a clear winner | [plugins/tech-llm-council](plugins/tech-llm-council/README.md) |
+| `greeninvoice-receipts` | Unofficial helper for Morning (formerly GreenInvoice): uploads new receipts from a local folder as expense drafts, skipping files already handled, and gives a read-only bookkeeping check-up (drafts waiting, open invoices, missing allocation numbers) | [plugins/greeninvoice-receipts](plugins/greeninvoice-receipts/README.md) |
 
 ## Connectors
 
@@ -18,10 +19,14 @@ MCP servers released as Claude desktop extensions (`.mcpb`). They are not
 served by the plugin marketplace: download the `.mcpb` from the release and
 open it in the Claude desktop app, which asks for the connector's settings and
 stores secrets securely.
+A connector marked **Python package** is released as a wheel instead: install
+it with `pip` or `uv tool install` and register it as described in its README.
 
 | Connector | What it does | Docs |
 |---|---|---|
 | `subq-snap-mcp` | SubQ Snap decision model as one tool, `decide`: fixed-choice questions about content, a probability per answer | [mcp/subq-snap-mcp](mcp/subq-snap-mcp/README.md) |
+| `google-workspace-mcp` | Gmail, Calendar, Drive, Docs, Sheets, Slides and Chat for one Google account per server (run it twice for, e.g., private and work); saves Gmail attachments to disk; `auth` command for sign-in. **Python package**, not a `.mcpb`: install the wheel from the release or run it with `uv` | [mcp/google-workspace-mcp](mcp/google-workspace-mcp/README.md) |
+| `zadarma-mcp` | Zadarma cloud telephony (regular account): PBX, voice menus (IVR), SIP, virtual numbers, SMS, statistics, eSIM, Verify and the Teamsale CRM, as 26 tools with an `action` parameter; actions that spend money, cannot be undone or reach other people run only with `confirm: true` after the user approves | [mcp/zadarma-mcp](mcp/zadarma-mcp/README.md) |
 
 ## Installing
 
@@ -124,6 +129,32 @@ released. A skill that should be installable or versioned belongs in a plugin.
    (output in `dist/`); `validate.yml` runs them on every pull request, then
    validates the manifest and packs a test bundle.
 
+### A Python connector
+
+A connector can also be a Python package: `mcp/<name>/pyproject.toml` and **no**
+`manifest.json`. It is released as a wheel and sdist (built with `uv build`),
+not as a `.mcpb`.
+
+1. `pyproject.toml` with `[project] name = "<name>"` and a semver `version`, the
+   code in `src/<name_with_underscores>/` whose `__init__.py` has
+   `__version__ = "<version>"  # x-release-please-version`, a committed `uv.lock`,
+   `tests/` (pytest, `dev` dependency group), and a `README.md`. Commit no
+   `.venv/`, `dist/` or caches.
+2. Add a package to `release-please-config.json`:
+   ```json
+   "mcp/<name>": {
+     "release-type": "python",
+     "package-name": "<name>",
+     "changelog-path": "CHANGELOG.md",
+     "extra-files": [
+       { "type": "generic", "path": "src/<name_with_underscores>/__init__.py" }
+     ]
+   }
+   ```
+   and seed `.release-please-manifest.json` with `"mcp/<name>": "<version>"`.
+3. `validate.yml` runs `uv sync --group dev`, `uv run pytest` and `uv build` on
+   every pull request; the release attaches the wheel, the sdist and `SHA256SUMS`.
+
 ## Releases
 
 Versions come from [conventional commits](https://www.conventionalcommits.org/)
@@ -215,3 +246,7 @@ installation at load time), an unlisted plugin directory, drift between
 `marketplace.json`, `plugin.json` and the release-please files, and committed
 credentials or token-shaped strings. `--plugin <dir>` validates one plugin on
 its own; the release build runs it on the extracted archive.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

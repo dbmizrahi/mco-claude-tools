@@ -30,7 +30,10 @@ released as Claude desktop extensions, .mcpb). The layout rule the checks enforc
                    == release-please package-name == release tag prefix
 
 and, for a connector, directory name == manifest.json name == package.json name
-== release-please package-name == release tag prefix.
+== release-please package-name == release tag prefix. A Python connector
+(mcp/<name>/pyproject.toml, no manifest.json) follows the same rule with
+pyproject [project].name, and its package __init__ __version__ matches
+[project].version.
 
 so that `plugins/<name>/` releases as `<name>-v<version>` and nothing has to
 be looked up twice.
@@ -79,7 +82,7 @@ SECRET_PATTERNS = [
 
 # Scanned for secrets. Binary, vendored and build paths are skipped.
 SCAN_SUFFIXES = {".py", ".sh", ".json", ".md", ".yml", ".yaml", ".txt", ".cfg", ".toml"}
-SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "dist", "dist-test", "build-check"}
+SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "dist", "dist-test", "build-check", ".pytest_cache"}
 
 # Placeholders that legitimately sit where a secret would go. A line containing
 # one is not scanned. Empty until a plugin ships a template with placeholders.
@@ -321,6 +324,71 @@ def tracked_files(root: Path, rel: str) -> list[str] | None:
     return [line for line in out.stdout.splitlines() if line]
 
 
+PY_BUILD_OUTPUT_RE = re.compile(r"(^|/)(\.venv|dist|build|__pycache__|\.pytest_cache)/|\.egg-info(/|$)|\.pyc$")
+INIT_VERSION_RE = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
+
+
+def read_pyproject(path: Path) -> dict | None:
+    """[project] table of a pyproject.toml. tomllib on 3.11+, else a minimal reader
+    for the two string keys this validator needs."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        import tomllib  # Python 3.11+
+        data = tomllib.loads(text)
+        project = data.get("project")
+        return project if isinstance(project, dict) else {}
+    except ModuleNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001 - tomllib.TOMLDecodeError
+        return None
+    section = re.search(r"^\[project\]\s*$(.*?)(?=^\[|\Z)", text, re.MULTILINE | re.DOTALL)
+    if not section:
+        return {}
+    out: dict[str, str] = {}
+    for key in ("name", "version"):
+        m = re.search(rf'^{key}\s*=\s*"([^"]*)"', section.group(1), re.MULTILINE)
+        if m:
+            out[key] = m.group(1)
+    return out
+
+
+def check_python_connector(root: Path, cdir: Path, rep: Report) -> dict | None:
+    """mcp/<name>/pyproject.toml — an MCP server shipped as a Python package
+    (wheel + sdist on the release), run with uv or pip."""
+    name = cdir.name
+    tag = f"{MCP_DIR}/{name}"
+    project = read_pyproject(cdir / "pyproject.toml")
+    if not rep.check(project is not None, f"{tag} pyproject.toml parses"):
+        return None
+    rep.check(bool(KEBAB_RE.fullmatch(name)), f"{tag} directory name is kebab-case", f"got {name!r}")
+    rep.check(project.get("name") == name, f"{tag} pyproject name equals the directory name",
+              f"pyproject says {project.get('name')!r}")
+    version = str(project.get("version", ""))
+    rep.check(bool(SEMVER_RE.fullmatch(version)), f"{tag} pyproject version is semver", f"got {version!r}")
+    rep.check((cdir / "README.md").is_file(), f"{tag} has README.md")
+    rep.check((cdir / "uv.lock").is_file(), f"{tag} has uv.lock", "run uv lock and commit the lock file")
+    rep.check((cdir / "tests").is_dir(), f"{tag} has tests/")
+    module = name.replace("-", "_")
+    init = cdir / "src" / module / "__init__.py"
+    init_rel = f"src/{module}/__init__.py"
+    if rep.check(init.is_file(), f"{tag} has {init_rel}"):
+        m = INIT_VERSION_RE.search(init.read_text(encoding="utf-8"))
+        rep.check(bool(m) and m.group(1) == version, f"{tag} __version__ equals pyproject version",
+                  f"__init__ says {m.group(1) if m else None!r}, pyproject says {version!r}")
+    rel = str(cdir.resolve().relative_to(root.resolve()))
+    files = tracked_files(root, rel)
+    if files is None:
+        rep.check(True, f"{tag} build output check skipped (not a git checkout)")
+    else:
+        built = [f for f in files if PY_BUILD_OUTPUT_RE.search(f)]
+        rep.check(not built, f"{tag} commits no .venv, dist, build or caches",
+                  "tracked: " + ", ".join(built[:5]))
+    return {"dir": cdir, "rel": rel, "version": version, "kind": "python", "init": init_rel}
+
+
 def check_connectors(root: Path, rep: Report) -> dict[str, dict]:
     """mcp/<name>/ — MCP servers released as Claude desktop extensions (.mcpb).
 
@@ -339,6 +407,11 @@ def check_connectors(root: Path, rep: Report) -> dict[str, dict]:
     for cdir in dirs:
         name = cdir.name
         tag = f"{MCP_DIR}/{name}"
+        if not (cdir / "manifest.json").exists() and (cdir / "pyproject.toml").is_file():
+            info = check_python_connector(root, cdir, rep)
+            if info is not None:
+                connectors[name] = info
+            continue
         manifest = load_json(cdir / "manifest.json", rep, f"{tag} manifest.json parses")
         if manifest is None:
             continue
@@ -384,7 +457,7 @@ def check_connectors(root: Path, rep: Report) -> dict[str, dict]:
             built = [f for f in files if BUILD_OUTPUT_RE.search(f)]
             rep.check(not built, f"{tag} commits no node_modules, dist or .mcpb",
                       "tracked: " + ", ".join(built[:5]))
-        connectors[name] = {"dir": cdir, "rel": rel, "version": version}
+        connectors[name] = {"dir": cdir, "rel": rel, "version": version, "kind": "node"}
     return connectors
 
 
@@ -448,7 +521,28 @@ def check_release_please(root: Path, plugins: dict[str, dict], connectors: dict[
                 f"{key} manifest version equals plugin.json version",
                 f"manifest says {manifest.get(key)!r}, plugin.json says {plugin_version!r}",
             )
-        if key in conn_by_rel:
+        if key in conn_by_rel and conn_by_rel[key].get("kind") == "python":
+            info = conn_by_rel[key]
+            rep.check(
+                manifest.get(key) == info["version"],
+                f"{key} manifest version equals the connector version",
+                f"{RP_MANIFEST} says {manifest.get(key)!r}, pyproject.toml says {info['version']!r}",
+            )
+            rep.check(
+                (pkg.get("release-type") or config.get("release-type")) == "python",
+                f"{key} uses release-type python",
+                "release-type python is what bumps pyproject.toml",
+            )
+            ef_paths = {
+                (ef if isinstance(ef, str) else str((ef or {}).get("path", "")))
+                for ef in pkg.get("extra-files") or []
+            }
+            rep.check(
+                info["init"] in ef_paths,
+                f"{key} extra-files bump {info['init']}",
+                "without it __version__ keeps the old version",
+            )
+        elif key in conn_by_rel:
             info = conn_by_rel[key]
             rep.check(
                 manifest.get(key) == info["version"],

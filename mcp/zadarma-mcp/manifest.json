@@ -1,0 +1,175 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/dist/mcpb-manifest.schema.json",
+  "manifest_version": "0.3",
+  "name": "zadarma-mcp",
+  "display_name": "Zadarma",
+  "version": "0.1.0",
+  "description": "Zadarma cloud telephony: PBX, voice menus (IVR), SIP, virtual numbers, SMS, statistics and Teamsale CRM, from Claude.",
+  "long_description": "Unofficial connector for the Zadarma API (regular account). 26 tools, one per API section, each with an `action` parameter: account info, callback, SIP numbers, price plan, statistics, PBX settings, extensions, external lines, call recordings, hold music, IVR sounds, menus and scenarios, speech recognition, virtual numbers, SMS, WebRTC widget, eSIM, Verify and the Teamsale CRM. Actions that spend money, cannot be undone or reach other people run only with confirm: true, after the user approves; without it the tool returns what it would do and changes nothing. Requests, including the parameters and any uploaded audio file, are sent to Zadarma (api.zadarma.com). You need your own Zadarma API key and secret.",
+  "author": {
+    "name": "dbmizrahi",
+    "url": "https://github.com/dbmizrahi"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dbmizrahi/mco-claude-tools"
+  },
+  "homepage": "https://github.com/dbmizrahi/mco-claude-tools/tree/main/mcp/zadarma-mcp",
+  "license": "MIT",
+  "keywords": [
+    "zadarma",
+    "telephony",
+    "pbx",
+    "ivr",
+    "voip",
+    "sms",
+    "teamsale",
+    "crm"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
+      "env": {
+        "ZADARMA_API_KEY": "${user_config.api_key}",
+        "ZADARMA_API_SECRET": "${user_config.api_secret}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "zadarma_info",
+      "description": "Account information: balance, call price, timezone, currencies, languages, price plans; number verification call; number lookup (HLR)."
+    },
+    {
+      "name": "zadarma_callback",
+      "description": "Start a callback: Zadarma first calls `from` (your phone, SIP, extension or PBX scenario), then connects it to `to`."
+    },
+    {
+      "name": "zadarma_sip",
+      "description": "SIP numbers of the account: list, online status, Caller ID, call forwarding, create, password."
+    },
+    {
+      "name": "zadarma_tariff",
+      "description": "Current price plan and changing it. See zadarma_info action tariffs for the list of plans."
+    },
+    {
+      "name": "zadarma_statistics",
+      "description": "Call statistics. Zadarma allows only 3 statistics requests per minute; do not poll. Dates: YYYY-MM-DD HH:MM:SS."
+    },
+    {
+      "name": "zadarma_pbx",
+      "description": "PBX settings: create the PBX, call forwarding on an extension, call-info (NOTIFY_*) and other webhook URLs. Receiving webhooks is not part of this tool; it only sets where Zadarma sends them."
+    },
+    {
+      "name": "zadarma_pbx_extensions",
+      "description": "PBX extensions (e.g. 100): list, online status, details, call recording, create, passwords, supervisor mode, Caller ID."
+    },
+    {
+      "name": "zadarma_pbx_ext_lines",
+      "description": "External lines of the PBX (up to 20, one of them free): list, create, edit, delete. connection_type gateway = your device registers on Zadarma; server = Zadarma registers on your SIP server (then server, login and secret are required). Paths are /v1/pbx/ext_lines/* (unverified: the reference shows them without /v1)."
+    },
+    {
+      "name": "zadarma_pbx_records",
+      "description": "Call recordings: get a temporary download link, or delete recordings. Returns links only, never audio. Use call_id (one recording) or pbx_call_id (all recordings of a call) from the PBX statistics."
+    },
+    {
+      "name": "zadarma_pbx_hold_music",
+      "description": "Hold music of the PBX (played instead of ringing): upload (MP3 or WAV, up to 5 MB, from a local path), switch, delete."
+    },
+    {
+      "name": "zadarma_ivr_sounds",
+      "description": "Voice-menu (IVR) sound files: list, upload (MP3 or WAV, up to 5 MB, from a local path) and delete."
+    },
+    {
+      "name": "zadarma_ivr_menus",
+      "description": "Voice menus (IVR) of the PBX: list (with status, type and working hours), create, delete. Menu 0 is the main menu."
+    },
+    {
+      "name": "zadarma_ivr_scenarios",
+      "description": "Scenarios of a voice menu: what happens on a key press (or no press). push_button: -1 = no key pressed, 0-9 = keys, 10 = autoresponder, 11-30 = additional scenarios. A scenario rings extensions or phone numbers (space-separated) or \"fax\"."
+    },
+    {
+      "name": "zadarma_speech_recognition",
+      "description": "Speech recognition of PBX call recordings: get the result, or start recognition (manual recognition must be enabled on the extension)."
+    },
+    {
+      "name": "zadarma_numbers",
+      "description": "Virtual (direct) numbers: list and details, auto-renewal, Caller name, routing to a SIP, ordering and prolonging, SMS reception, incoming channels. Ordering needs a documents group, which is created in the Zadarma web account."
+    },
+    {
+      "name": "zadarma_sms",
+      "description": "Send SMS, list SMS templates, and list allowed senders for a number."
+    },
+    {
+      "name": "zadarma_webrtc",
+      "description": "WebRTC web-phone widget: key for a SIP or extension, create/show/change/delete the integration, allowed domains."
+    },
+    {
+      "name": "zadarma_esim",
+      "description": "eSIM data packages: supported devices, available packages, connected packages, order a package."
+    },
+    {
+      "name": "zadarma_verify",
+      "description": "Send a verification code by SMS, call or email (or a press-1 call), and check the code. A request is valid for 10 minutes."
+    },
+    {
+      "name": "zadarma_crm_customers",
+      "description": "Teamsale CRM customers (clients) and their source tags, labels, custom properties, timeline notes and employees."
+    },
+    {
+      "name": "zadarma_crm_leads",
+      "description": "Teamsale CRM leads: list, get, create, update (and convert to a client), delete."
+    },
+    {
+      "name": "zadarma_crm_users",
+      "description": "Teamsale CRM users (your team): list, one user, working hours, groups and rights."
+    },
+    {
+      "name": "zadarma_crm_contacts",
+      "description": "All CRM contacts with phone numbers (clients, employees, leads, users): search, and identify a phone number."
+    },
+    {
+      "name": "zadarma_crm_deals",
+      "description": "Teamsale CRM deals and their feed notes."
+    },
+    {
+      "name": "zadarma_crm_tasks",
+      "description": "Teamsale CRM tasks and planned calls (events): list, get, create, update, close, delete."
+    },
+    {
+      "name": "zadarma_crm_calls_files",
+      "description": "Teamsale CRM call list, and file information by ID (metadata only; file contents are never returned)."
+    }
+  ],
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "API key",
+      "description": "Your Zadarma API key (Zadarma account > Settings > API). Stored securely by the Claude desktop app.",
+      "sensitive": true,
+      "required": true
+    },
+    "api_secret": {
+      "type": "string",
+      "title": "API secret",
+      "description": "Your Zadarma API secret (Zadarma account > Settings > API). Stored securely by the Claude desktop app.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}

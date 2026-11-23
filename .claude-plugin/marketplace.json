@@ -12,6 +12,12 @@
       "source": "./plugins/tech-llm-council",
       "category": "productivity",
       "description": "Pressure-tests a software, infrastructure or SaaS business decision with a council of 5 technical, product and business advisors, anonymous peer review and a chairman verdict. Optional SubQ Snap decision model through the separate subq-snap-mcp connector: picks advisor answers and the chairman verdict from fixed answer options with an improvement loop, plus routing, file relevance, strongest-response and agreement signals."
+    },
+    {
+      "name": "greeninvoice-receipts",
+      "source": "./plugins/greeninvoice-receipts",
+      "category": "productivity",
+      "description": "Unofficial helper for Morning (formerly GreenInvoice): uploads new receipt files from a local folder as expense drafts that Morning reads automatically, skipping files already handled, and produces a read-only bookkeeping check-up. Not affiliated with Morning; not tax advice."
     }
   ]
 }
