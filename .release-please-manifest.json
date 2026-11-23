@@ -1,4 +1,7 @@
 {
   "plugins/tech-llm-council": "0.3.0",
-  "mcp/subq-snap-mcp": "0.2.0"
+  "plugins/greeninvoice-receipts": "0.1.0",
+  "mcp/subq-snap-mcp": "0.2.0",
+  "mcp/google-workspace-mcp": "0.1.0",
+  "mcp/zadarma-mcp": "0.1.0"
 }

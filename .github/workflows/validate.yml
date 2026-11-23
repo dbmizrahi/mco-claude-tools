@@ -76,6 +76,40 @@ jobs:
           done
 
 
+  # Tests and builds every Python connector in mcp/<name>/ (pyproject.toml, no
+  # manifest.json): the unit tests, then a wheel + sdist build as a smoke test.
+  # Not --locked: release-please bumps the project version in pyproject.toml,
+  # which uv.lock also records, so a release commit would trip a locked sync.
+  python-connectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Test and build each Python connector
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=0
+          for pyproject in mcp/*/pyproject.toml; do
+            dir=$(dirname "$pyproject")
+            [ -f "$dir/manifest.json" ] && continue
+            found=1
+            name=$(basename "$dir")
+            echo "::group::$name"
+            (
+              cd "$dir"
+              uv sync --group dev
+              uv run pytest -q
+              uv build --out-dir "$RUNNER_TEMP/$name"
+            )
+            echo "::endgroup::"
+          done
+          [ "$found" = 1 ] || echo "no Python connectors in mcp/"
+
   validate:
     runs-on: ubuntu-latest
     steps:
@@ -96,6 +130,18 @@ jobs:
       # plugin.json and the release-please files, committed credentials.
       - name: Repo validation
         run: python3 scripts/ci/validate_repo.py
+
+      # Python unit tests shipped inside plugins (plugins/<name>/tests/).
+      # Standard library only; no network.
+      - name: Plugin unit tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for tests in plugins/*/tests; do
+            echo "::group::$tests"
+            (cd "$(dirname "$tests")" && python3 -m unittest discover -s tests)
+            echo "::endgroup::"
+          done
 
       # Second opinion from the official validator, on manifest shape.
       # `claude plugin validate .` checks ONLY the marketplace manifest, so every

@@ -15,6 +15,8 @@ name: Build release assets
 #   connector  — mcp/<name>/manifest.json, an MCP server released as a Claude
 #                desktop extension (.mcpb), packed with production
 #                dependencies only.
+#   python-connector — mcp/<name>/pyproject.toml (no manifest.json), an MCP
+#                server released as a Python wheel + sdist built with uv.
 
 on:
   workflow_call:
@@ -74,12 +76,16 @@ jobs:
             KIND=connector
             DIR="mcp/$NAME"
             MANIFEST="$DIR/manifest.json"
+          elif [ -f "mcp/$NAME/pyproject.toml" ]; then
+            KIND=python-connector
+            DIR="mcp/$NAME"
+            MANIFEST="$DIR/pyproject.toml"
           else
             echo "::error::'$NAME' is neither a plugin in .claude-plugin/marketplace.json nor a connector in mcp/$NAME/"
             exit 1
           fi
           read -r MANIFEST_NAME MANIFEST_VERSION < <(
-            python3 -c 'import json, sys; m = json.load(open(sys.argv[1])); print(m["name"], m["version"])' \
+            python3 -c 'import json, sys, tomllib; p = sys.argv[1]; m = tomllib.load(open(p, "rb"))["project"] if p.endswith(".toml") else json.load(open(p)); print(m["name"], m["version"])' \
               "$MANIFEST"
           )
           # Tripwire: if release-please ever stops bumping the manifest, fail
@@ -210,6 +216,38 @@ jobs:
           done
           echo "bundle is clean"
 
+      # --------------------------------------------------- python connector
+      - uses: astral-sh/setup-uv@v6
+        if: steps.v.outputs.kind == 'python-connector'
+
+      - name: Test and build the Python connector (wheel + sdist)
+        if: steps.v.outputs.kind == 'python-connector'
+        env:
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+          DIR: ${{ steps.v.outputs.dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          (cd "$DIR" && uv sync --group dev && uv run pytest -q && uv build --out-dir "$GITHUB_WORKSPACE/dist")
+          MOD="${NAME//-/_}"
+          for f in "dist/${MOD}-${VERSION}-py3-none-any.whl" "dist/${MOD}-${VERSION}.tar.gz"; do
+            [ -f "$f" ] || { echo "::error::expected $f"; ls dist; exit 1; }
+          done
+          python3 - "dist/${MOD}-${VERSION}-py3-none-any.whl" "$NAME" "$VERSION" <<'PY'
+          import sys, zipfile
+          whl, name, version = sys.argv[1:]
+          z = zipfile.ZipFile(whl)
+          meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+          text = z.read(meta).decode()
+          if f"Name: {name}" not in text or f"Version: {version}" not in text:
+              sys.exit("::error::wheel metadata does not match the tag")
+          leaked = [n for n in z.namelist() if n.startswith("tests/") or "__pycache__" in n]
+          if leaked:
+              sys.exit(f"::error::leaked into the wheel: {leaked[:5]}")
+          print("wheel is clean")
+          PY
+
       # ------------------------------------------------------------- common
       - name: Checksums
         id: sums
@@ -221,6 +259,9 @@ jobs:
           set -euo pipefail
           if [ "$KIND" = plugin ]; then
             ASSETS="${NAME}-${VERSION}.zip ${NAME}.plugin"
+          elif [ "$KIND" = python-connector ]; then
+            MOD="${NAME//-/_}"
+            ASSETS="${MOD}-${VERSION}-py3-none-any.whl ${MOD}-${VERSION}.tar.gz"
           else
             ASSETS="${NAME}-${VERSION}.mcpb"
           fi
@@ -252,6 +293,19 @@ jobs:
               echo
               echo "\`.zip\` and \`.plugin\` are the same archive under two names; verify with \`SHA256SUMS\`."
               echo "Setup steps after installing are in the plugin's README."
+            } > dist/NOTES.md
+          elif [ "$KIND" = python-connector ]; then
+            MOD="${NAME//-/_}"
+            {
+              echo "## Install"
+              echo
+              echo '```'
+              echo "pip install ${MOD}-${VERSION}-py3-none-any.whl     # or: uv tool install ${MOD}-${VERSION}-py3-none-any.whl"
+              echo '```'
+              echo
+              echo "Then register the \`${NAME}\` command with Claude; setup (credentials, several accounts) is in its README (\`mcp/${NAME}/README.md\`)."
+              echo
+              echo "Verify the download with \`SHA256SUMS\`."
             } > dist/NOTES.md
           else
             {

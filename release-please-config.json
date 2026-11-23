@@ -16,9 +16,43 @@
         }
       ]
     },
+    "plugins/greeninvoice-receipts": {
+      "package-name": "greeninvoice-receipts",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": ".claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "mcp/subq-snap-mcp": {
       "release-type": "node",
       "package-name": "subq-snap-mcp",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "mcp/google-workspace-mcp": {
+      "release-type": "python",
+      "package-name": "google-workspace-mcp",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "src/google_workspace_mcp/__init__.py"
+        }
+      ]
+    },
+    "mcp/zadarma-mcp": {
+      "release-type": "node",
+      "package-name": "zadarma-mcp",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         {
