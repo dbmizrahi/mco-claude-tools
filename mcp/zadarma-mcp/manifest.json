@@ -3,7 +3,7 @@
   "manifest_version": "0.3",
   "name": "zadarma-mcp",
   "display_name": "Zadarma",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Zadarma cloud telephony: PBX, voice menus (IVR), SIP, virtual numbers, SMS, statistics and Teamsale CRM, from Claude.",
   "long_description": "Unofficial connector for the Zadarma API (regular account). 26 tools, one per API section, each with an `action` parameter: account info, callback, SIP numbers, price plan, statistics, PBX settings, extensions, external lines, call recordings, hold music, IVR sounds, menus and scenarios, speech recognition, virtual numbers, SMS, WebRTC widget, eSIM, Verify and the Teamsale CRM. Actions that spend money, cannot be undone or reach other people run only with confirm: true, after the user approves; without it the tool returns what it would do and changes nothing. Requests, including the parameters and any uploaded audio file, are sent to Zadarma (api.zadarma.com). You need your own Zadarma API key and secret.",
   "author": {

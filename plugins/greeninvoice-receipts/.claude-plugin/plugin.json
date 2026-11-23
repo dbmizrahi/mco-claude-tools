@@ -1,6 +1,6 @@
 {
   "name": "greeninvoice-receipts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Unofficial helper for Morning (formerly GreenInvoice): uploads new receipt files from a local folder as expense drafts that Morning reads automatically, skipping files already handled, and produces a read-only bookkeeping check-up (drafts waiting, open invoices, missing allocation numbers, expenses without a category). Not affiliated with Morning; not tax advice.",
   "author": {
     "name": "dbmizrahi",
